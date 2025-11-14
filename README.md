@@ -1,4 +1,4 @@
-# Firefox Tab Group Deduper
+# Tab Group Deduper
 
 This WebExtension keeps your Firefox tab groups unique by name. When you try to put a tab into a group that already exists (and already contains tabs), the extension automatically moves the new tab into the existing group instead of creating a duplicate.
 
@@ -26,7 +26,7 @@ This WebExtension keeps your Firefox tab groups unique by name. When you try to 
 
 ## Development
 
-- Requires Firefox 127 or newer for the `tabGroups` API.
+- Requires Firefox 139 or newer for the `tabGroups` API.
 - Background script lives in `background.js`.
 - Update `manifest.json` as needed (e.g. version bumps, icons, localization).
 
@@ -38,9 +38,10 @@ This WebExtension keeps your Firefox tab groups unique by name. When you try to 
 2. Bump the `version` in `manifest.json` whenever you upload a new package.
 3. Install `web-ext` (`npm install -g web-ext`) and run `web-ext lint` to catch validation issues locally.
 4. Create a distributable archive with `web-ext build` (output lives in `web-ext-artifacts/`).
-5. Visit [addons.mozilla.org/developers](https://addons.mozilla.org/developers/), start a new submission, and upload the generated `.zip`.
-6. During submission, provide a unique name, description (you can adapt this README), and privacy policy if required.
-7. Wait for AMO review. Once approved, Firefox users can install the published version directly from AMO.
+5. Confirm `browser_specific_settings.gecko.data_collection_permissions.required` reflects your data practices (set to `["none"]` if you do not collect data).
+6. Visit [addons.mozilla.org/developers](https://addons.mozilla.org/developers/), start a new submission, and upload the generated `.zip`.
+7. During submission, provide a unique name, description (you can adapt this README), and privacy policy if required.
+8. Wait for AMO review. Once approved, Firefox users can install the published version directly from AMO.
 
 For self-hosted signing, add your own `browser_specific_settings.gecko.id` (e.g. `tab-group-deduper@yourdomain.com`) before running `web-ext sign`.
 

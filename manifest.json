@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "name": "Firefox Tab Group Deduper",
+  "name": "Tab Group Deduper",
   "version": "1.0.0",
   "description": "Automatically merges Firefox tab groups that share the same name so new tabs join the existing group instead of creating duplicates.",
   "permissions": [
@@ -16,7 +16,12 @@
   "browser_specific_settings": {
     "gecko": {
       "id": "tab-group-deduper@example.com",
-      "strict_min_version": "127.0"
+      "strict_min_version": "139.0",
+      "data_collection_permissions": {
+        "required": [
+          "none"
+        ]
+      }
     }
   }
 }
