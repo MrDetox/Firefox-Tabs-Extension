@@ -342,6 +342,10 @@ async function addRule() {
 }
 
 // ============ Quick Group Suggestions ============
+function stripTld(domain) {
+  return domain.replace(/\.(com|org|net|io|co|edu|gov|co\.uk|ai|app|dev|me|us)$/i, '');
+}
+
 async function loadQuickGroupSuggestions() {
   const container = document.getElementById('suggestions');
   const badge = document.getElementById('suggestionCount');
@@ -371,31 +375,48 @@ async function loadQuickGroupSuggestions() {
     for (const s of validSuggestions) {
       const clone = template.content.cloneNode(true);
 
-      const actionText = s.existingGroup ? `Add to "${s.existingGroup}"` : 'Group';
+      const defaultTitle = s.existingGroup ? s.existingGroup : stripTld(s.domain);
+      const actionText = s.existingGroup ? `Add to "${s.existingGroup}"` : `Add to "${defaultTitle}"`;
       const countText = s.tabCount === 1 ? '1 tab' : `${s.tabCount} tabs`;
 
-      const nameInput = clone.querySelector('.suggestion-name-input');
-      nameInput.value = s.suggestedName;
-      nameInput.title = 'Click to rename group';
-      
+      clone.querySelector('.suggestion-domain').textContent = s.domain;
       clone.querySelector('.suggestion-count').textContent = countText;
 
-      const btn = clone.querySelector('.group-btn');
-      btn.textContent = actionText;
-      btn.addEventListener('click', async () => {
-        const groupName = nameInput.value.trim();
-        if (!groupName) {
-          showStatus('Please enter a group name', 'error');
-          return;
+      const btnContainer = clone.querySelector('.group-btn-container');
+      const btnMain = clone.querySelector('.group-btn-main');
+      const btnTextSpan = clone.querySelector('.btn-text');
+      const btnPrefix = clone.querySelector('.btn-prefix');
+      const btnQuotes = clone.querySelectorAll('.btn-quote');
+      const groupNameInput = clone.querySelector('.group-name-input');
+      const btnSeparator = clone.querySelector('.group-btn-separator');
+      const btnEdit = clone.querySelector('.group-btn-edit');
+      
+      let currentTitle = defaultTitle;
+
+      const setButtonTextState = (title, loading = false) => {
+        if (loading) {
+           btnContainer.classList.add('loading');
+           btnTextSpan.textContent = '...';
+        } else {
+           btnContainer.classList.remove('loading');
+           btnTextSpan.textContent = title;
         }
-        btn.disabled = true;
-        btn.textContent = '...';
+      };
+
+      setButtonTextState(currentTitle);
+
+      const performGroupAction = async () => {
+        if (btnContainer.classList.contains('disabled') || btnContainer.classList.contains('editing')) return;
+        
+        btnContainer.classList.add('disabled');
+        setButtonTextState(currentTitle, true);
+        
         try {
           const res = await browser.runtime.sendMessage({
             type: 'groupTabs',
             domain: s.domain,
-            groupName: groupName,
-            tabIds: s.tabIds
+            tabIds: s.tabIds,
+            title: currentTitle
           });
           if (res.success) {
             showStatus(`Grouped ${s.tabCount} tab${s.tabCount > 1 ? 's' : ''}!`, 'success');
@@ -405,15 +426,76 @@ async function loadQuickGroupSuggestions() {
             }, 300);
           } else {
             showStatus('Failed to group', 'error');
-            btn.disabled = false;
-            btn.textContent = actionText;
+            btnContainer.classList.remove('disabled');
+            setButtonTextState(currentTitle);
           }
         } catch (e) {
           showStatus('Failed to group', 'error');
-          btn.disabled = false;
-          btn.textContent = actionText;
+          btnContainer.classList.remove('disabled');
+          setButtonTextState(currentTitle);
+        }
+      };
+
+      // Click on the main part of the button triggers the action
+      btnMain.addEventListener('click', (e) => {
+        // Prevent triggering if clicking the input while it's active
+        if (e.target === groupNameInput) return;
+        performGroupAction();
+      });
+
+      // Inline editing logic - Show for both new and existing groups
+      btnSeparator.style.display = 'block';
+      btnEdit.style.display = 'flex';
+
+      const startEditing = (e) => {
+        e.stopPropagation();
+        if (btnContainer.classList.contains('editing')) {
+           saveEdit();
+           return;
+        }
+        btnContainer.classList.add('editing');
+        groupNameInput.value = currentTitle;
+        groupNameInput.focus();
+        // Move cursor to the end instead of selecting all
+        groupNameInput.setSelectionRange(currentTitle.length, currentTitle.length);
+      };
+
+      const saveEdit = () => {
+        if (!btnContainer.classList.contains('editing')) return;
+        const newTitle = groupNameInput.value.trim();
+        if (newTitle !== '') {
+          currentTitle = newTitle;
+          setButtonTextState(currentTitle);
+        }
+        btnContainer.classList.remove('editing');
+      };
+
+      const cancelEdit = () => {
+        if (!btnContainer.classList.contains('editing')) return;
+        btnContainer.classList.remove('editing');
+      };
+
+      // Fix toggle: Prevent blur from firing when clicking the edit button
+      btnEdit.addEventListener('mousedown', (e) => {
+        // Only if we are already editing, we want to prevent blur so the click handler can toggle it off
+        if (btnContainer.classList.contains('editing')) {
+          e.preventDefault();
         }
       });
+
+      btnEdit.addEventListener('click', startEditing);
+
+      groupNameInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          saveEdit();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          cancelEdit();
+        }
+      });
+
+      groupNameInput.addEventListener('blur', saveEdit);
 
       container.appendChild(clone);
     }

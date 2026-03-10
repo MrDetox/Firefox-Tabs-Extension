@@ -252,16 +252,6 @@ function getDomain(url) {
   }
 }
 
-function getCleanName(domain) {
-  if (!domain) return '';
-  // Remove common TLDs and anything after
-  return domain.replace(/\.(com|org|net|io|co|edu|gov|me|info|biz|uk|de|fr|jp|au|ca|ru|br|in|it|nl)(\.[a-z]{2,3})?$/i, '')
-               .replace(/\./g, ' ') // Replace remaining dots with spaces
-               .split(' ')
-               .map(word => word.charAt(0).toUpperCase() + word.slice(1)) // Capitalize
-               .join(' ');
-}
-
 function normalizeUrl(url) {
   try {
     const urlObj = new URL(url);
@@ -492,7 +482,6 @@ async function analyzeTabsForGrouping() {
       const existingGroup = await findMatchingGroup(domain);
       suggestions.push({
         domain,
-        suggestedName: existingGroup ? existingGroup.title : getCleanName(domain),
         tabCount: ungroupedTabs.length,
         tabIds: ungroupedTabs.map(t => t.id),
         existingGroup: existingGroup ? existingGroup.title : null
@@ -525,19 +514,18 @@ async function findMatchingGroup(domain) {
   return null;
 }
 
-async function groupTabsByDomain(domain, tabIds, customGroupName) {
-  const groupTitle = customGroupName || getCleanName(domain) || domain;
-  const existingGroup = await findMatchingGroup(groupTitle);
+async function groupTabsByDomain(domain, tabIds, customTitle) {
+  const existingGroup = await findMatchingGroup(customTitle || domain);
   
   if (existingGroup) {
     await browser.tabs.group({ groupId: existingGroup.id, tabIds });
-    log(`Added ${tabIds.length} tabs to existing group "${existingGroup.title}" (${existingGroup.id})`);
+    log(`Added ${tabIds.length} tabs from ${domain} to existing group "${existingGroup.title}" (${existingGroup.id})`);
     return existingGroup.id;
   }
   
   const groupId = await browser.tabs.group({ tabIds });
-  await browser.tabGroups.update(groupId, { title: groupTitle });
-  log(`Created new group "${groupTitle}" (${groupId}) with ${tabIds.length} tabs`);
+  await browser.tabGroups.update(groupId, { title: customTitle || domain });
+  log(`Created new group "${customTitle || domain}" (${groupId}) with ${tabIds.length} tabs`);
   return groupId;
 }
 
@@ -550,7 +538,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
   } else if (message.type === 'groupTabs') {
-    groupTabsByDomain(message.domain, message.tabIds, message.groupName)
+    groupTabsByDomain(message.domain, message.tabIds, message.title)
       .then(() => sendResponse({ success: true }))
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
