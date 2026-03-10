@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <title>Tab Group Deduper</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 475px;
+      max-height: 1000px;
+      overflow-x: hidden;
+      overflow-y: auto;
+      padding: 0;
+      margin: 0px 0px 50px 0px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 13px;
+      background: #f8f9fa;
+      border-radius: 8px;
+    }
+
+    .header {
+      background: linear-gradient(135deg, #0060df 0%, #0040a0 100%);
+      color: white;
+      padding: 14px 16px;
+      font-size: 16px;
+      font-weight: 600;
+      border-radius: 8px 8px 0 0;
+      /* Slightly extend past body edge to cover browser frame / anti-alias seam at corners */
+      margin: -1px -1px 0 -1px;
+      padding: 15px 17px 14px 17px;
+    }
+
+    .content {
+      padding: 12px;
+      overflow-x: hidden;
+    }
+
+    /* Collapsible Sections */
+    .section {
+      background: white;
+      border-radius: 8px;
+      margin-bottom: 10px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+      overflow: visible;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 14px;
+      cursor: pointer;
+      user-select: none;
+      border-bottom: 1px solid transparent;
+    }
+
+    .section-header:hover {
+      background: #f5f7fa;
+    }
+
+    .section.open .section-header {
+      border-bottom-color: #eee;
+    }
+
+    .section-title {
+      font-weight: 600;
+      font-size: 13px;
+      color: #333;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 1;
+      min-width: 0;
+    }
+
+    .section-title .icon {
+      font-size: 14px;
+    }
+
+    .section-badge {
+      background: #e0e0e0;
+      color: #666;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-weight: 500;
+      flex-shrink: 0;
+      min-width: 24px;
+      text-align: center;
+    }
+
+    .section-toggle {
+      color: #999;
+      transition: transform 0.2s;
+      flex-shrink: 0;
+      width: 16px;
+      text-align: center;
+    }
+
+    .section.open .section-toggle {
+      transform: rotate(180deg);
+    }
+
+    .section-body {
+      display: none;
+      padding: 12px 14px;
+      overflow: visible;
+    }
+
+    .section.open .section-body {
+      display: block;
+    }
+
+    /* Settings */
+    .setting-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+    }
+
+    .setting-row:not(:last-child) {
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .setting-label {
+      font-weight: 500;
+      color: #333;
+    }
+
+    .setting-desc {
+      font-size: 11px;
+      color: #888;
+      margin-top: 2px;
+    }
+
+    .setting-suboption {
+      padding-left: 20px;
+      border-left: 3px solid #e0e0e0;
+      margin-left: 4px;
+    }
+
+    .subsection-label {
+      display: block;
+      font-size: 11px;
+      color: #666;
+      font-weight: 600;
+      margin-bottom: 8px;
+      margin-top: 4px;
+    }
+
+    .setting-label-line {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      cursor: default;
+    }
+
+    .example-icon {
+      cursor: help;
+      font-size: 12px;
+      color: #0060df;
+      font-style: italic;
+      font-weight: 600;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+
+    .example-icon:hover {
+      text-decoration: underline;
+    }
+
+    .example-tooltip {
+      position: absolute;
+      left: 0;
+      top: 100%;
+      margin-top: 4px;
+      min-width: 280px;
+      max-width: 431px;
+      padding: 8px 12px;
+      background: #333;
+      color: #fff;
+      border-radius: 6px;
+      font-size: 11px;
+      line-height: 1.4;
+      font-weight: normal;
+      font-style: normal;
+      z-index: 1000;
+      visibility: hidden;
+      opacity: 0;
+      transition: opacity 0.15s ease, visibility 0.15s;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+      pointer-events: none;
+    }
+
+    .example-tooltip--align-right {
+      left: auto;
+      right: 0;
+    }
+
+    .setting-label-line.example-tooltip-visible .example-tooltip,
+    .setting-label-line:focus-within .example-tooltip {
+      visibility: visible;
+      opacity: 1;
+    }
+
+    .form-field-with-example {
+      position: relative;
+    }
+
+    .form-field-with-example .setting-label-line {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .form-field-with-example .example-tooltip {
+      top: 100%;
+    }
+
+    .form-field-with-example .example-tooltip.example-tooltip--align-right {
+      left: auto;
+      right: 0;
+    }
+
+    .form-field-with-example .example-tooltip:not(.example-tooltip--align-right) {
+      left: 0;
+    }
+
+    .section-title .setting-label-line {
+      margin-left: 2px;
+    }
+
+    input[type="number"] {
+      width: 70px;
+      padding: 4px 6px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 12px;
+      text-align: center;
+    }
+
+    .toggle-switch {
+      position: relative;
+      width: 40px;
+      height: 22px;
+    }
+
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .toggle-slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: #ccc;
+      transition: .2s;
+      border-radius: 22px;
+    }
+
+    .toggle-slider:before {
+      position: absolute;
+      content: "";
+      height: 16px;
+      width: 16px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: .2s;
+      border-radius: 50%;
+    }
+
+    input:checked+.toggle-slider {
+      background-color: #0060df;
+    }
+
+    input:checked+.toggle-slider:before {
+      transform: translateX(18px);
+    }
+
+    /* Rules Form */
+    .add-rule-form {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #eee;
+      margin-bottom: 12px;
+      overflow: visible;
+    }
+
+    .form-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .form-field {
+      flex: 1;
+      position: relative;
+      overflow: visible;
+    }
+
+    .form-field label {
+      display: block;
+      font-size: 11px;
+      color: #666;
+      margin-bottom: 4px;
+      font-weight: 500;
+    }
+
+    .form-field input {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+
+    .form-field input:focus {
+      outline: none;
+      border-color: #0060df;
+      box-shadow: 0 0 0 2px rgba(0, 96, 223, 0.1);
+    }
+
+    /* Combobox Dropdown */
+    .combobox {
+      position: relative;
+      overflow: visible;
+    }
+
+    .combobox input {
+      padding-right: 28px;
+    }
+
+    .combobox-toggle {
+      position: absolute;
+      right: 8px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: #888;
+      font-size: 10px;
+      pointer-events: none;
+    }
+
+    .combobox-dropdown {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      background: white;
+      border: 1px solid #ddd;
+      border-top: none;
+      border-radius: 0 0 4px 4px;
+      max-height: 150px;
+      overflow-y: auto;
+      z-index: 1000;
+      display: none;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    }
+
+    .combobox.open .combobox-dropdown {
+      display: block;
+    }
+
+    .combobox.open input {
+      border-radius: 4px 4px 0 0;
+    }
+
+    .combobox-option {
+      padding: 8px 10px;
+      cursor: pointer;
+      font-size: 12px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .combobox-option:last-child {
+      border-bottom: none;
+    }
+
+    .combobox-option:hover {
+      background: #f0f5ff;
+    }
+
+    .combobox-option.highlighted {
+      background: #e0ebff;
+    }
+
+    .combobox-empty {
+      padding: 10px;
+      color: #888;
+      font-size: 11px;
+      text-align: center;
+      font-style: italic;
+    }
+
+    .combobox-header {
+      padding: 6px 10px;
+      font-size: 10px;
+      color: #888;
+      background: #f8f9fa;
+      text-transform: uppercase;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+
+    .add-rule-btn {
+      background: #0060df;
+      color: white;
+      border: none;
+      padding: 8px 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .add-rule-btn:hover {
+      background: #0050c0;
+    }
+
+    /* Rule Items */
+    .rule-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 12px;
+      background: #f8f9fa;
+      border-radius: 6px;
+      margin-bottom: 6px;
+    }
+
+    .rule-item.disabled {
+      opacity: 0.5;
+    }
+
+    .rule-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .rule-pattern {
+      font-weight: 500;
+      color: #333;
+      font-size: 12px;
+    }
+
+    .rule-arrow {
+      color: #0060df;
+      margin: 0 6px;
+    }
+
+    .rule-target {
+      color: #0060df;
+      font-weight: 500;
+    }
+
+    .rule-actions {
+      display: flex;
+      gap: 4px;
+    }
+
+    .rule-actions button {
+      background: white;
+      border: 1px solid #ddd;
+      padding: 4px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 11px;
+    }
+
+    .rule-actions button:hover {
+      background: #f0f0f0;
+    }
+
+    .rule-actions .delete-btn:hover {
+      background: #fee;
+      border-color: #f88;
+      color: #c00;
+    }
+
+    /* Suggestions */
+    .suggestion-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 12px;
+      background: #f8f9fa;
+      border-radius: 6px;
+      margin-bottom: 6px;
+    }
+
+    .suggestion-domain {
+      font-weight: 500;
+      color: #0060df;
+      font-size: 12px;
+    }
+
+    .suggestion-count {
+      font-size: 11px;
+      color: #888;
+    }
+
+    .group-btn {
+      background: #0060df;
+      color: white;
+      border: none;
+      padding: 6px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    .group-btn:hover {
+      background: #0050c0;
+    }
+
+    .group-btn:disabled {
+      background: #aaa;
+      cursor: not-allowed;
+    }
+
+    /* Empty States */
+    .empty-state {
+      text-align: center;
+      padding: 16px;
+      color: #888;
+      font-size: 12px;
+    }
+
+    /* Status Toast */
+    .status {
+      position: fixed;
+      bottom: 12px;
+      left: 12px;
+      right: 12px;
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      display: none;
+      z-index: 100;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    }
+
+    .status.success {
+      background: #d4edda;
+      color: #155724;
+    }
+
+    .status.error {
+      background: #f8d7da;
+      color: #721c24;
+    }
+
+    .feedback-text {
+      margin: 0 0 10px 0;
+      color: #555;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .feedback-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .feedback-btn {
+      display: inline-block;
+      text-decoration: none;
+      text-align: center;
+    }
+
+    .feedback-btn-donate {
+      background: #ffdd00;
+      color: #000;
+    }
+
+    .feedback-btn-donate:hover {
+      background: #e6c700;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="header">Tab Group Deduper</div>
+
+  <div class="content">
+    <!-- Merge duplicate groups Section -->
+    <div class="section" id="settingsSection">
+      <div class="section-header">
+        <span class="section-title"><span class="icon">🔀</span><span class="setting-label-line">Merge duplicate groups
+            <span class="example-icon" aria-label="Explanation">i</span>
+            <div class="example-tooltip" role="tooltip">Example: You have two groups both named "Work". They become one
+              "Work" group.</div>
+          </span></span>
+        <span class="section-toggle">▼</span>
+      </div>
+      <div class="section-body">
+        <div class="setting-row">
+          <div>
+            <div class="setting-label-line">
+              <span class="setting-label">Auto-merge duplicates</span>
+              <span class="example-icon" aria-label="Example">i</span>
+              <div class="example-tooltip" role="tooltip">Example: Two groups named "Work" → one "Work" group.</div>
+            </div>
+            <div class="setting-desc">Merge groups with the same name</div>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="enabled">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label-line">
+              <span class="setting-label">Debounce time</span>
+              <span class="example-icon" aria-label="Example">i</span>
+              <div class="example-tooltip" role="tooltip">Example: You rename a group to "Projects". After 1.2 seconds,
+                any other "Projects" group merges in. Keeps merge from firing while you're still typing.</div>
+            </div>
+            <div class="setting-desc">Wait before merging (ms)</div>
+          </div>
+          <input type="number" id="debounceTime" min="0" max="10000" step="100" value="1200">
+        </div>
+      </div>
+    </div>
+
+    <!-- Merge duplicate tabs Section -->
+    <div class="section" id="deduplicationSection">
+      <div class="section-header">
+        <span class="section-title"><span class="icon">🔗</span><span class="setting-label-line">Merge duplicate tabs
+            <span class="example-icon" aria-label="Explanation">i</span>
+            <div class="example-tooltip" role="tooltip">Example: Gmail is already open. You click a Gmail link → you
+              switch to that tab instead of opening another.</div>
+          </span></span>
+        <span class="section-badge" id="deduplicationCount">0</span>
+        <span class="section-toggle">▼</span>
+      </div>
+      <div class="section-body">
+        <div class="setting-row">
+          <div>
+            <div class="setting-label-line">
+              <span class="setting-label">Merge duplicate URLs (all sites)</span>
+              <span class="example-icon" aria-label="Example">i</span>
+              <div class="example-tooltip" role="tooltip">Example: github.com is already open. You open github.com again
+                → focus goes to the existing tab; no second tab.</div>
+            </div>
+            <div class="setting-desc">Switch to existing tab when opening the same URL</div>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="preventDuplicateTabs">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="setting-row setting-suboption" id="skipDedupeWhenUserDuplicatedTabRow" style="display: none;">
+          <div>
+            <div class="setting-label-line">
+              <span class="setting-label">Don't dedupe when user duplicates tab</span>
+              <span class="example-icon" aria-label="Example">i</span>
+              <div class="example-tooltip" role="tooltip">Example: You right-click a tab → "Duplicate Tab". The
+                duplicate stays; we don't switch back to the original.</div>
+            </div>
+            <div class="setting-desc">If you use Firefox's Duplicate Tab, keep the new tab instead of switching back
+            </div>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="skipDedupeWhenUserDuplicatedTab">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label-line">
+              <span class="setting-label">Keep the new tab</span>
+              <span class="example-icon" aria-label="Example">i</span>
+              <div class="example-tooltip" role="tooltip">Example: YouTube is in an old tab. You open YouTube in a new
+                tab → we close the old tab and keep the new one.</div>
+            </div>
+            <div class="setting-desc">Close the older duplicate instead of the new one</div>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="closeOldTab">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="setting-row setting-suboption" id="preferGroupedRow" style="display: none;">
+          <div>
+            <div class="setting-label-line">
+              <span class="setting-label">Prefer tab in group</span>
+              <span class="example-icon" aria-label="Example">i</span>
+              <div class="example-tooltip" role="tooltip">Example: The duplicate is in a group (e.g. "Work"). On: switch
+                to it and close the new tab. Off: close the one in the group and keep the new tab.</div>
+            </div>
+            <div class="setting-desc">When duplicate is in a group: switch to it (close new tab)</div>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="preferGroupedTabWhenDuplicate">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="add-rule-form" style="margin-top: 12px;">
+          <span class="subsection-label">Rules for specific URLs or domains</span>
+          <div class="form-row">
+            <div class="form-field form-field-with-example">
+              <label for="deduplicationUrl">
+                <span class="setting-label-line">
+                  URL pattern
+                  <span class="example-icon" aria-label="Example">i</span>
+                  <div class="example-tooltip" role="tooltip">Example: https://reddit.com — only Reddit gets this rule.
+                    Or click "Use Current Tab" to use the page you're on.</div>
+                </span>
+              </label>
+              <div class="combobox" id="urlCombobox">
+                <input type="text" id="deduplicationUrl" placeholder="e.g. https://reddit.com" autocomplete="off">
+                <span class="combobox-toggle">▼</span>
+                <div class="combobox-dropdown" id="urlDropdown"></div>
+              </div>
+            </div>
+            <div class="form-field form-field-with-example">
+              <label for="deduplicationMatchType">
+                <span class="setting-label-line">
+                  Match type
+                  <span class="example-icon" aria-label="Example">i</span>
+                  <div class="example-tooltip example-tooltip--align-right" role="tooltip">Exact: only this URL (e.g.
+                    https://reddit.com/r/news). Domain: any page on that site (e.g. any reddit.com page). Per page: each
+                    page dedupes separately (e.g. reddit.com/r/news and reddit.com/r/funny are different).</div>
+                </span>
+              </label>
+              <select id="deduplicationMatchType"
+                style="width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px;">
+                <option value="exact">This exact URL</option>
+                <option value="domain">Any page on this domain</option>
+                <option value="path">Exact per page (apply to whole domain)</option>
+              </select>
+            </div>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button class="add-rule-btn" id="useCurrentTabBtn" style="flex: 1;">Use Current Tab</button>
+            <button class="add-rule-btn" id="addDeduplicationBtn" style="flex: 1;">+ Add Rule</button>
+          </div>
+        </div>
+        <div id="deduplicationRules"></div>
+      </div>
+    </div>
+
+    <!-- Rules Section -->
+    <div class="section" id="rulesSection">
+      <div class="section-header">
+        <span class="section-title"><span class="icon">📋</span><span class="setting-label-line">Auto-Group Rules <span
+              class="example-icon" aria-label="Explanation">i</span>
+            <div class="example-tooltip" role="tooltip">Example: Any new YouTube tab is put into a group called
+              "Videos".</div>
+          </span></span>
+        <span class="section-badge" id="ruleCount">0</span>
+        <span class="section-toggle">▼</span>
+      </div>
+      <div class="section-body">
+        <div class="add-rule-form">
+          <div class="form-row">
+            <div class="form-field form-field-with-example">
+              <label for="rulePattern">
+                <span class="setting-label-line">
+                  Domain pattern
+                  <span class="example-icon" aria-label="Example">i</span>
+                  <div class="example-tooltip" role="tooltip">Example: youtube.com → all YouTube tabs go into the group
+                    you name below.</div>
+                </span>
+              </label>
+              <div class="combobox" id="domainCombobox">
+                <input type="text" id="rulePattern" placeholder="e.g. youtube" autocomplete="off">
+                <span class="combobox-toggle">▼</span>
+                <div class="combobox-dropdown" id="domainDropdown"></div>
+              </div>
+            </div>
+            <div class="form-field form-field-with-example">
+              <label for="ruleGroup">
+                <span class="setting-label-line">
+                  Group name
+                  <span class="example-icon" aria-label="Example">i</span>
+                  <div class="example-tooltip example-tooltip--align-right" role="tooltip">Example: "Videos" — new
+                    YouTube tabs are added to a group named Videos.</div>
+                </span>
+              </label>
+              <div class="combobox" id="groupCombobox">
+                <input type="text" id="ruleGroup" placeholder="e.g. Videos" autocomplete="off">
+                <span class="combobox-toggle">▼</span>
+                <div class="combobox-dropdown" id="groupDropdown"></div>
+              </div>
+            </div>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button class="add-rule-btn" id="useCurrentTabForGroupingBtn" style="flex: 1;">Use Current Tab</button>
+            <button class="add-rule-btn" id="addRuleBtn" style="flex: 1;">+ Add Rule</button>
+          </div>
+        </div>
+        <div id="rules"></div>
+      </div>
+    </div>
+
+    <!-- Quick Group Section -->
+    <div class="section" id="suggestionsSection">
+      <div class="section-header">
+        <span class="section-title"><span class="icon">📁</span><span class="setting-label-line">Quick Group <span
+              class="example-icon" aria-label="Explanation">i</span>
+            <div class="example-tooltip" role="tooltip">Example: You have 5 Gmail and 3 GitHub tabs. Click "Group" next
+              to Gmail → all 5 go into one group.</div>
+          </span></span>
+        <span class="section-badge" id="suggestionCount">0</span>
+        <span class="section-toggle">▼</span>
+      </div>
+      <div class="section-body">
+        <div id="suggestions"></div>
+      </div>
+    </div>
+
+    <!-- Feedback Section -->
+    <div class="section open" id="feedbackSection">
+      <div class="section-header">
+        <span class="section-title"><span class="icon">💬</span> Feedback</span>
+        <span class="section-toggle">▼</span>
+      </div>
+      <div class="section-body">
+        <p class="feedback-text">I'm actively working on improving this extension and would love to hear your thoughts!
+          Found a bug or have a feature idea? Please send feedback!</p>
+        <div class="feedback-actions">
+          <a href="#" id="feedbackLink" class="add-rule-btn feedback-btn">Send feedback</a>
+          <a href="#" id="donateLink" class="add-rule-btn feedback-btn feedback-btn-donate" target="_blank"
+            rel="noopener">Buy me a coffee</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="status" id="status"></div>
+
+  <!-- Templates -->
+  <template id="ruleTemplate">
+    <div class="rule-item">
+      <div class="rule-info">
+        <span class="rule-pattern"></span>
+        <span class="rule-arrow">→</span>
+        <span class="rule-target"></span>
+      </div>
+      <div class="rule-actions">
+        <button class="toggle-btn">On</button>
+        <button class="delete-btn">✕</button>
+      </div>
+    </div>
+  </template>
+
+  <template id="suggestionTemplate">
+    <div class="suggestion-item">
+      <div>
+        <div class="suggestion-domain">
+          <input type="text" class="suggestion-name-input">
+        </div>
+        <div class="suggestion-count"></div>
+      </div>
+      <button class="group-btn"></button>
+    </div>
+  </template>
+
+  <template id="dedupeRuleTemplate">
+    <div class="rule-item">
+      <div class="rule-info">
+        <span class="rule-pattern"
+          style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></span>
+        <span class="rule-match-type"
+          style="margin-left: 8px; font-size: 11px; color: #888; font-style: italic;"></span>
+      </div>
+      <div class="rule-actions">
+        <button class="toggle-btn">On</button>
+        <button class="delete-btn">✕</button>
+      </div>
+    </div>
+  </template>
+
+  <script src="popup.js"></script>
+</body>
+
+</html>
