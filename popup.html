@@ -826,6 +826,19 @@
           </div>
           <button class="add-rule-btn" id="sweepDuplicatesBtn" style="height: 32px; padding: 0 12px; flex-shrink: 0;">Clean up now</button>
         </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label-line">
+              <span class="setting-label">Deep clean (reloads old tabs)</span>
+              <span class="example-icon" aria-label="Example">i</span>
+              <div class="example-tooltip" role="tooltip">Old tabs that were unloaded from memory hide their address, so
+                the normal cleanup can't see them. Deep clean briefly reloads each of those tabs to read its address,
+                then closes every duplicate. Uses some data; can take a moment.</div>
+            </div>
+            <div class="setting-desc">Wakes tabs unloaded from memory so no duplicate is missed</div>
+          </div>
+          <button class="add-rule-btn" id="deepSweepBtn" style="height: 32px; padding: 0 12px; flex-shrink: 0;">Deep clean</button>
+        </div>
         <!-- SECTION A: Single Tab Limits (Domain Rules) -->
         <div class="add-rule-form" style="margin-top: 16px;">
           <span class="subsection-label">Single Tab Limit (Domain Rules)</span>

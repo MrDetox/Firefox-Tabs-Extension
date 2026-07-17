@@ -943,3 +943,25 @@ document.getElementById('sweepDuplicatesBtn').addEventListener('click', async ()
     btn.disabled = false;
   }
 });
+document.getElementById('deepSweepBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('deepSweepBtn');
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = 'Cleaning...';
+  try {
+    const res = await browser.runtime.sendMessage({ type: 'deepSweepDuplicates' });
+    if (res && res.success) {
+      const parts = [];
+      if (res.woken) parts.push(`woke ${res.woken} old tab${res.woken > 1 ? 's' : ''}`);
+      parts.push(res.closed ? `closed ${res.closed} duplicate${res.closed > 1 ? 's' : ''}` : 'no duplicates found');
+      showStatus(`Deep clean: ${parts.join(', ')}`, 'success');
+    } else {
+      showStatus('Deep clean failed', 'error');
+    }
+  } catch (e) {
+    showStatus('Deep clean failed', 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+});

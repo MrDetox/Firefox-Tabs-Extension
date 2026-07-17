@@ -615,6 +615,32 @@ async function sweepDuplicates() {
   return closed;
 }
 
+// Deep clean: wake ("reload") every unloaded tab whose URL we don't know, so
+// even tabs restored from before the extension existed become visible, then
+// run the normal sweep. Costs data/CPU per woken tab, so it's manual-only.
+// ponytail: sequential wake, ~8s timeout per tab; parallelize if people run 50+ zombies.
+async function deepSweepDuplicates() {
+  await ensureCache();
+  const tabs = await browser.tabs.query({});
+  const unknown = tabs.filter((t) => !isRealUrl(t.url) && !isRealUrl(urlCache[t.id]));
+  let woken = 0;
+
+  for (const t of unknown) {
+    try {
+      await browser.tabs.reload(t.id);
+      for (let i = 0; i < 27; i++) {           // poll up to ~8s for the URL to appear
+        await new Promise((r) => setTimeout(r, 300));
+        const cur = await browser.tabs.get(t.id);
+        if (isRealUrl(cur.url)) { await rememberTabUrl(cur); woken++; break; }
+      }
+    } catch (_) { /* tab vanished mid-reload; nothing to do */ }
+  }
+
+  log(`Deep sweep woke ${woken}/${unknown.length} unloaded tab(s).`);
+  const closed = await sweepDuplicates();
+  return { woken, closed };
+}
+
 async function analyzeTabsForGrouping() {
   if (!HAS_TAB_GROUPS) return [];
   const tabs = await browser.tabs.query({});
@@ -781,6 +807,11 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
   } else if (message.type === 'sweepDuplicates') {
     sweepDuplicates()
       .then(closed => sendResponse({ success: true, closed }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  } else if (message.type === 'deepSweepDuplicates') {
+    deepSweepDuplicates()
+      .then(result => sendResponse({ success: true, ...result }))
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
   }

@@ -1,5 +1,10 @@
 # Changelog - Better Tab Groups
 
+## [3.7.2] - 2026-07-17
+
+### Added
+- **"Deep clean" button:** Old tabs that were unloaded from memory hide their address, so the normal cleanup cannot see them at all. Deep clean briefly reloads each such tab to read its address, then closes every duplicate found. Manual-only (it uses some data and can take a moment), never runs automatically.
+
 ## [3.7.1] - 2026-07-17
 
 ### Fixed
