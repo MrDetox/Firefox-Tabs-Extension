@@ -519,12 +519,11 @@ async function handleDuplicateTab(existingTab, newTab) {
 }
 
 // --- Proactive sweep --------------------------------------------------------
-// Closes existing exact-URL duplicate tabs, keeping one per URL. Unlike the
-// on-open dedup, this cleans up duplicates that are already sitting there
-// (including Android's unloaded tabs, whose URL we know from the cache).
-// Removing an unloaded tab by id does NOT wake it, so this stays cheap.
-// ponytail: exact-URL only; domain "single tab limit" rules still fire on open,
-// not here, to avoid a sweep nuking many tabs at once.
+// Closes duplicate tabs that are already sitting there (including Android's
+// unloaded tabs, whose URL we know from the cache). Removing an unloaded tab by
+// id does NOT wake it, so this stays cheap. Two passes: exact-URL duplicates,
+// then "Single Tab Limit" domain rules (one tab per limited site, subdomains
+// included).
 function isGrouped(tab) {
   return HAS_TAB_GROUPS && tab.groupId !== undefined && tab.groupId !== TAB_GROUP_ID_NONE;
 }
@@ -572,6 +571,11 @@ async function sweepGroups(groups, matchFnFor, alreadyClosed) {
 }
 
 async function sweepDuplicates() {
+  // Make sure rules/settings are current: on a freshly-woken event page the
+  // top-level loadSettings() may not have resolved yet, which would otherwise
+  // leave deduplicationRules empty and silently skip the domain pass below.
+  await loadSettings();
+
   const myExtensionOrigin = browser.runtime.getURL('');
   const candidates = [];
   for (const t of await getCandidateTabs()) {
@@ -588,25 +592,32 @@ async function sweepDuplicates() {
   }
   let closed = await sweepGroups(byUrl, (key) => (u) => normalizeUrl(u) === key, alreadyClosed);
 
-  // Pass 2: "Single Tab Limit" domain rules — one tab per limited domain.
-  const limitedDomains = new Set();
+  // Pass 2: "Single Tab Limit" domain rules — one tab per limited site.
+  // A rule for "facebook.com" also covers www.facebook.com, m.facebook.com, etc.
+  const limitedDomains = [];
   for (const rule of deduplicationRules) {
     if (rule.enabled && rule.matchType === 'domain' && rule.url) {
       const d = getDomain(rule.url);
-      if (d) limitedDomains.add(d.toLowerCase());
+      if (d) limitedDomains.push(d.toLowerCase());
     }
   }
-  if (limitedDomains.size) {
+  if (limitedDomains.length) {
+    // Which limited domain (if any) a URL's host belongs to, incl. subdomains.
+    const limitedDomainOf = (url) => {
+      const host = (getDomain(url) || '').toLowerCase();
+      if (!host) return null;
+      return limitedDomains.find((d) => host === d || host.endsWith('.' + d)) || null;
+    };
     const byDomain = new Map();
     for (const t of candidates) {
-      const d = getDomain(t.url);
-      if (!d || !limitedDomains.has(d.toLowerCase())) continue;
-      if (!byDomain.has(d.toLowerCase())) byDomain.set(d.toLowerCase(), []);
-      byDomain.get(d.toLowerCase()).push(t);
+      const d = limitedDomainOf(t.url);
+      if (!d) continue;
+      if (!byDomain.has(d)) byDomain.set(d, []);
+      byDomain.get(d).push(t);
     }
     closed += await sweepGroups(
       byDomain,
-      (domain) => (u) => (getDomain(u) || '').toLowerCase() === domain,
+      (domain) => (u) => limitedDomainOf(u) === domain,
       alreadyClosed
     );
   }

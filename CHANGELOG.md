@@ -1,5 +1,11 @@
 # Changelog - Better Tab Groups
 
+## [3.7.3] - 2026-07-17
+
+### Fixed
+- **Cleanup ignored "Single Tab Limit" rules in some cases:** The cleanup and Deep clean could report "No duplicates found" even when a limited domain (e.g. facebook.com) had several tabs open on different pages. The domain rules are now always loaded before a sweep runs, so they are applied reliably.
+- **Domain rules now cover subdomains:** A "Single Tab Limit" rule for `facebook.com` now also matches `www.facebook.com`, `m.facebook.com`, and other subdomains, so all tabs on that site collapse to one.
+
 ## [3.7.2] - 2026-07-17
 
 ### Added
