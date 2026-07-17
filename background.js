@@ -1,3 +1,6 @@
+const HAS_TAB_GROUPS = typeof browser.tabGroups !== 'undefined';
+const TAB_GROUP_ID_NONE = HAS_TAB_GROUPS ? browser.tabGroups.TAB_GROUP_ID_NONE : -1;
+
 const MERGE_IN_PROGRESS = new Set();
 const RETRY_COUNTS = new Map();
 const MERGE_TIMERS = new Map();
@@ -9,9 +12,16 @@ const DEFAULT_SETTINGS = {
   preventDuplicateTabs: false,
   closeOldTab: false,
   preferGroupedTabWhenDuplicate: false,
-  skipDedupeWhenUserDuplicatedTab: true
+  skipDedupeWhenUserDuplicatedTab: true,
+  autoCloseDuplicates: true,
+  autoCloseDuplicatesInterval: false
 };
 const MAX_RETRIES = 5;
+
+// Automatic sweeps only run on Android: that's the only platform where unloaded
+// tabs hide their URL and stale duplicates pile up. On desktop tabs.query
+// already sees them, so we leave desktop tabs alone (the manual button still works).
+let isAndroid = false;
 
 let settings = { ...DEFAULT_SETTINGS };
 let rules = [];
@@ -30,6 +40,8 @@ async function loadSettings() {
     settings.closeOldTab = result.closeOldTab === true;
     settings.preferGroupedTabWhenDuplicate = result.preferGroupedTabWhenDuplicate === true;
     settings.skipDedupeWhenUserDuplicatedTab = result.skipDedupeWhenUserDuplicatedTab !== false;
+    settings.autoCloseDuplicates = result.autoCloseDuplicates !== false;
+    settings.autoCloseDuplicatesInterval = result.autoCloseDuplicatesInterval === true;
     rules = result.rules || [];
     deduplicationRules = result.deduplicationRules || [];
     log("Settings loaded:", settings, "Rules:", rules.length, "Deduplication rules:", deduplicationRules.length);
@@ -74,6 +86,7 @@ function matchesRule(url, rule) {
 }
 
 async function findOrCreateGroupByName(groupName, windowId) {
+  if (!HAS_TAB_GROUPS) return null;
   const allGroups = await browser.tabGroups.query({});
   const nameLower = groupName.toLowerCase();
   
@@ -88,11 +101,12 @@ async function findOrCreateGroupByName(groupName, windowId) {
 }
 
 async function applyRulesToTab(tab) {
+  if (!HAS_TAB_GROUPS) return;
   if (!tab.url || tab.url.startsWith('about:') || tab.url.startsWith('moz-extension:')) {
     return;
   }
   
-  if (tab.groupId !== browser.tabGroups.TAB_GROUP_ID_NONE) {
+  if (tab.groupId !== TAB_GROUP_ID_NONE) {
     return; // Already in a group
   }
   
@@ -118,6 +132,7 @@ async function applyRulesToTab(tab) {
 }
 
 async function getGroupSafe(groupId) {
+  if (!HAS_TAB_GROUPS) return null;
   try {
     return await browser.tabGroups.get(groupId);
   } catch (error) {
@@ -131,6 +146,7 @@ async function getGroupSafe(groupId) {
 }
 
 async function findExistingGroupWithTabs(title, windowId, ignoreGroupId) {
+  if (!HAS_TAB_GROUPS) return null;
   const candidates = await browser.tabGroups.query({ title });
 
   for (const candidate of candidates) {
@@ -234,17 +250,23 @@ function scheduleMerge(groupId, reason) {
   log(`Scheduled merge for group ${groupId} (${reason}) in ${settings.debounceTime}ms.`);
 }
 
-browser.tabGroups.onCreated.addListener((group) => {
-  scheduleMerge(group.id, "created");
-});
+if (HAS_TAB_GROUPS) {
+  browser.tabGroups.onCreated.addListener((group) => {
+    scheduleMerge(group.id, "created");
+  });
 
-browser.tabGroups.onUpdated.addListener((group) => {
-  scheduleMerge(group.id, "updated");
-});
+  browser.tabGroups.onUpdated.addListener((group) => {
+    scheduleMerge(group.id, "updated");
+  });
+}
 
 function getDomain(url) {
   try {
-    const urlObj = new URL(url);
+    let cleanUrl = url;
+    if (url && !url.includes('://')) {
+      cleanUrl = 'http://' + url;
+    }
+    const urlObj = new URL(cleanUrl);
     // While a library would be best, keeping it simple as before but cleaner
     return urlObj.hostname.replace(/^www\./, '');
   } catch (e) {
@@ -313,20 +335,139 @@ function matchesDeduplicationRule(url, rule) {
   }
 }
 
+// --- Zombie-aware URL cache -------------------------------------------------
+// Firefox for Android unloads ("zombifies") background tabs to save memory,
+// which strips their URL from the tabs API: tabs.query stops matching them and
+// tab.url becomes "about:blank". A stale duplicate is then invisible to dedup
+// until you open it and reload. We remember each tab's last real URL (in
+// storage.session, which survives the background page suspending) so unloaded
+// duplicates can still be found and closed by id.
+// ponytail: whole-object write per URL change; batch if someone runs 100s of tabs.
+const URL_CACHE_KEY = 'tabUrlCache';
+let urlCache = {};
+const sessionStore = browser.storage.session || browser.storage.local;
+let cacheLoadPromise = null;
+
+function ensureCache() {
+  if (!cacheLoadPromise) {
+    cacheLoadPromise = sessionStore.get(URL_CACHE_KEY)
+      .then((r) => { urlCache = (r && r[URL_CACHE_KEY]) || {}; })
+      .catch(() => { urlCache = {}; });
+  }
+  return cacheLoadPromise;
+}
+
+function saveUrlCache() {
+  return sessionStore.set({ [URL_CACHE_KEY]: urlCache }).catch(() => {});
+}
+
+function isRealUrl(url) {
+  return !!url && !url.startsWith('about:');
+}
+
+async function rememberTabUrl(tab) {
+  if (!tab || typeof tab.id !== 'number' || !isRealUrl(tab.url)) return;
+  await ensureCache();
+  if (urlCache[tab.id] !== tab.url) {
+    urlCache[tab.id] = tab.url;
+    await saveUrlCache();
+  }
+}
+
+async function forgetTab(tabId) {
+  await ensureCache();
+  if (urlCache[tabId] !== undefined) {
+    delete urlCache[tabId];
+    await saveUrlCache();
+  }
+}
+
+async function seedUrlCache() {
+  await ensureCache();
+  try {
+    const tabs = await browser.tabs.query({});
+    for (const t of tabs) await rememberTabUrl(t);
+  } catch (_) {}
+}
+
+function sameDomain(a, b) {
+  const da = getDomain(a);
+  const db = getDomain(b);
+  return !!da && !!db && da.toLowerCase() === db.toLowerCase();
+}
+
+// All tabs, with unloaded/zombie tabs' missing URLs filled in from the cache.
+async function getCandidateTabs() {
+  await ensureCache();
+  const live = await browser.tabs.query({});
+  const byId = new Map();
+  for (const t of live) {
+    const url = isRealUrl(t.url) ? t.url : urlCache[t.id];
+    byId.set(t.id, { ...t, url });
+  }
+  // Older Android builds omit unloaded tabs from query entirely; add them back.
+  for (const idStr of Object.keys(urlCache)) {
+    const id = Number(idStr);
+    if (!byId.has(id)) {
+      byId.set(id, { id, url: urlCache[idStr], windowId: undefined, groupId: TAB_GROUP_ID_NONE, discarded: true });
+    }
+  }
+  return Array.from(byId.values());
+}
+
+// Exact URL match wins for every rule type; 'domain' rules fall back to any
+// other tab on the same host.
+function findDuplicateCandidate(newTab, normalizedNewUrl, candidates, matchType) {
+  const newDomain = matchType === 'domain' ? getDomain(newTab.url) : null;
+  let domainFallback = null;
+  for (const c of candidates) {
+    if (c.id === newTab.id || !isRealUrl(c.url)) continue;
+    if (normalizeUrl(c.url) === normalizedNewUrl) return c;
+    if (matchType === 'domain' && !domainFallback && newDomain) {
+      const cDomain = getDomain(c.url);
+      if (cDomain && cDomain.toLowerCase() === newDomain.toLowerCase()) domainFallback = c;
+    }
+  }
+  return matchType === 'domain' ? domainFallback : null;
+}
+
+// Turn a candidate into a live tab, re-checking the match in case an unloaded
+// tab woke up and navigated away since we cached its URL (never close the wrong tab).
+async function resolveDuplicate(candidate, newTab, normalizedNewUrl, matchType) {
+  let tab;
+  try {
+    tab = await browser.tabs.get(candidate.id);
+  } catch (_) {
+    forgetTab(candidate.id);
+    return null;
+  }
+  let url = tab.url;
+  if (isRealUrl(url)) rememberTabUrl(tab);
+  else url = urlCache[candidate.id];        // still unloaded: trust the cache
+  if (!isRealUrl(url)) { forgetTab(candidate.id); return null; }
+
+  const stillMatches = normalizeUrl(url) === normalizedNewUrl ||
+    (matchType === 'domain' && sameDomain(url, newTab.url));
+  if (!stillMatches) return null;
+  return { ...tab, url };
+}
+
 async function checkForDuplicateTab(newTab) {
-  if (!newTab.url || newTab.url.startsWith('about:') || newTab.url.startsWith('moz-extension:')) {
+  const myExtensionOrigin = browser.runtime.getURL('');
+  if (!newTab.url || newTab.url.startsWith('about:') || newTab.url.startsWith(myExtensionOrigin)) {
     return;
   }
 
+  rememberTabUrl(newTab);
   const normalizedNewTabUrl = normalizeUrl(newTab.url);
 
-  // If this tab was created via "Duplicate Tab" (or opened from another tab with same URL),
-  // the browser sets openerTabId to the source tab. Skip our deduplication so we don't undo the user's action.
+  // If this tab was created via "Duplicate Tab", the browser sets openerTabId
+  // to the source tab. Skip dedup so we don't undo the user's action.
   if (settings.skipDedupeWhenUserDuplicatedTab && newTab.openerTabId != null) {
     try {
       const openerTab = await browser.tabs.get(newTab.openerTabId);
       if (openerTab && openerTab.url && normalizeUrl(openerTab.url) === normalizedNewTabUrl) {
-        log("Tab", newTab.id, "appears to be a duplicate of", newTab.openerTabId, "(same URL as opener); skipping deduplication.");
+        log("Tab", newTab.id, "is a user-duplicated tab; skipping deduplication.");
         return;
       }
     } catch (_) {
@@ -334,127 +475,115 @@ async function checkForDuplicateTab(newTab) {
     }
   }
 
-  // Global setting: prevent any duplicate tabs with exact same URL
-  if (settings.preventDuplicateTabs) {
-    try {
-      const parsedUrl = new URL(newTab.url);
-      const urlQuery = parsedUrl.origin + parsedUrl.pathname + "*"; // Broad enough to catch query/hash variants
-      const matchingTabs = await browser.tabs.query({ url: urlQuery });
-      
-      for (const tab of matchingTabs) {
-        if (tab.id === newTab.id) continue;
-        if (normalizeUrl(tab.url) === normalizedNewTabUrl) {
-          await handleDuplicateTab(tab, newTab);
-          return;
-        }
-      }
-    } catch (e) {
-      log("Error processing preventDuplicateTabs global setting:", e);
-    }
-  }
-  
-  // Check all deduplication rules
+  let candidates = null;
+  const getCandidates = async () => (candidates ||= await getCandidateTabs());
+
+  const tryHandle = async (matchType) => {
+    const dup = findDuplicateCandidate(newTab, normalizedNewTabUrl, await getCandidates(), matchType);
+    if (!dup) return false;
+    const existingTab = await resolveDuplicate(dup, newTab, normalizedNewTabUrl, matchType);
+    if (!existingTab) return false;
+    await handleDuplicateTab(existingTab, newTab);
+    return true;
+  };
+
+  // Global setting: prevent any duplicate tabs with the exact same URL.
+  if (settings.preventDuplicateTabs && await tryHandle('exact')) return;
+
+  // Per-URL deduplication rules.
   for (const rule of deduplicationRules) {
     if (!rule.enabled) continue;
-    
-    if (matchesDeduplicationRule(newTab.url, rule)) {
-      log(`Deduplication rule matched for tab ${newTab.id}: ${newTab.url}`);
-      
-      let existingTab = null;
-      let matchingTabs = [];
-
-      try {
-        if (rule.matchType === 'exact' || rule.matchType === 'path') {
-          // For exact or path matching, we need exact URL matches, so we can focus our query
-          const parsedUrl = new URL(newTab.url);
-          const urlQuery = parsedUrl.origin + parsedUrl.pathname + "*"; 
-          matchingTabs = await browser.tabs.query({ url: urlQuery });
-        } else if (rule.matchType === 'domain') {
-          // For domain match, query any URL on this domain
-          const newTabDomain = getDomain(newTab.url);
-          if (newTabDomain) {
-             matchingTabs = await browser.tabs.query({ url: "*://" + newTabDomain + "/*" });
-             // Ensure we also grab subdomains like www. if applicable by matching on the base domain
-             // A more comprehensive query if the domain is simply example.com without subdomains
-             const subDomainQuery = "*://*." + newTabDomain + "/*";
-             const subDomainTabs = await browser.tabs.query({ url: subDomainQuery });
-             // Combine but deduplicate by tab ID
-             const combinedTabs = [...matchingTabs, ...subDomainTabs];
-             const uniqueTabsMap = new Map();
-             combinedTabs.forEach(t => uniqueTabsMap.set(t.id, t));
-             matchingTabs = Array.from(uniqueTabsMap.values());
-          }
-        }
-      } catch (e) {
-        log("Error querying for duplicates for rule:", rule, e);
-        continue;
-      }
-      
-      // Now evaluate the matched tabs from the targeted query
-      if (rule.matchType === 'exact') {
-        for (const tab of matchingTabs) {
-          if (tab.id === newTab.id) continue;
-          if (normalizeUrl(tab.url) === normalizedNewTabUrl) {
-            existingTab = tab;
-            break;
-          }
-        }
-      } else if (rule.matchType === 'domain') {
-        // Domain match: first try exact URL
-        for (const tab of matchingTabs) {
-          if (tab.id === newTab.id) continue;
-          if (normalizeUrl(tab.url) === normalizedNewTabUrl) {
-            existingTab = tab;
-            break;
-          }
-        }
-        
-        // If no exact match, find any tab from same domain
-        if (!existingTab) {
-          const newTabDomain = getDomain(newTab.url);
-          for (const tab of matchingTabs) {
-            if (tab.id === newTab.id || !tab.url) continue;
-            
-            const tabDomain = getDomain(tab.url);
-            if (newTabDomain && tabDomain && newTabDomain.toLowerCase() === tabDomain.toLowerCase()) {
-              existingTab = tab;
-              break;
-            }
-          }
-        }
-      } else if (rule.matchType === 'path') {
-        // "Exact per page on domain"
-        for (const tab of matchingTabs) {
-          if (tab.id === newTab.id || !tab.url) continue;
-          if (normalizeUrl(tab.url) === normalizedNewTabUrl) {
-            existingTab = tab;
-            break;
-          }
-        }
-      }
-      
-      if (existingTab) {
-         await handleDuplicateTab(existingTab, newTab);
-         return;
-      }
-    }
+    if (!matchesDeduplicationRule(newTab.url, rule)) continue;
+    log(`Deduplication rule matched for tab ${newTab.id}: ${newTab.url}`);
+    if (await tryHandle(rule.matchType)) return;
   }
 }
 
 async function handleDuplicateTab(existingTab, newTab) {
-  const preferGrouped = settings.preferGroupedTabWhenDuplicate && existingTab.groupId !== undefined && existingTab.groupId !== browser.tabGroups.TAB_GROUP_ID_NONE;
+  const preferGrouped = settings.preferGroupedTabWhenDuplicate && existingTab.groupId !== undefined && existingTab.groupId !== TAB_GROUP_ID_NONE;
   if (settings.closeOldTab && !preferGrouped) {
     log(`Found duplicate tab ${existingTab.id} for ${newTab.url}, keeping new tab ${newTab.id} and closing old tab ${existingTab.id}`);
     await browser.tabs.remove(existingTab.id);
   } else {
     log(`Found duplicate tab ${existingTab.id} for ${newTab.url}, activating it and closing ${newTab.id}`);
-    await browser.windows.update(existingTab.windowId, { focused: true });
+    try {
+      if (browser.windows && typeof browser.windows.update === 'function') {
+        await browser.windows.update(existingTab.windowId, { focused: true });
+      }
+    } catch (err) {
+      log("Failed to focus window (not supported on this platform):", err);
+    }
     await browser.tabs.update(existingTab.id, { active: true });
     await browser.tabs.remove(newTab.id);
   }
 }
 
+// --- Proactive sweep --------------------------------------------------------
+// Closes existing exact-URL duplicate tabs, keeping one per URL. Unlike the
+// on-open dedup, this cleans up duplicates that are already sitting there
+// (including Android's unloaded tabs, whose URL we know from the cache).
+// Removing an unloaded tab by id does NOT wake it, so this stays cheap.
+// ponytail: exact-URL only; domain "single tab limit" rules still fire on open,
+// not here, to avoid a sweep nuking many tabs at once.
+function isGrouped(tab) {
+  return HAS_TAB_GROUPS && tab.groupId !== undefined && tab.groupId !== TAB_GROUP_ID_NONE;
+}
+
+function pickKeeper(tabs) {
+  return tabs.reduce((best, t) => {
+    if (!best) return t;
+    // Keep a loaded tab over an unloaded one.
+    if (!!best.discarded !== !!t.discarded) return best.discarded ? t : best;
+    // Optionally keep a tab that's filed in a group.
+    if (settings.preferGroupedTabWhenDuplicate && isGrouped(best) !== isGrouped(t)) {
+      return isGrouped(t) ? t : best;
+    }
+    // Otherwise keep the most recently used.
+    return (t.lastAccessed || 0) > (best.lastAccessed || 0) ? t : best;
+  }, null);
+}
+
+async function stillHasUrl(id, expectedNorm) {
+  try {
+    const t = await browser.tabs.get(id);
+    if (isRealUrl(t.url)) { rememberTabUrl(t); return normalizeUrl(t.url) === expectedNorm; }
+  } catch (_) {
+    forgetTab(id);
+    return false;
+  }
+  // Unloaded: trust the cached URL (don't wake it just to verify).
+  return isRealUrl(urlCache[id]) && normalizeUrl(urlCache[id]) === expectedNorm;
+}
+
+async function sweepDuplicates() {
+  const myExtensionOrigin = browser.runtime.getURL('');
+  const candidates = await getCandidateTabs();
+
+  const groups = new Map();
+  for (const t of candidates) {
+    if (!isRealUrl(t.url) || t.url.startsWith(myExtensionOrigin)) continue;
+    const key = normalizeUrl(t.url);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(t);
+  }
+
+  let closed = 0;
+  for (const [key, tabs] of groups) {
+    if (tabs.length < 2) continue;
+    const keeper = pickKeeper(tabs);
+    for (const t of tabs) {
+      if (t.id === keeper.id) continue;
+      if (!(await stillHasUrl(t.id, key))) continue;
+      try { await browser.tabs.remove(t.id); closed++; }
+      catch (_) { forgetTab(t.id); }
+    }
+  }
+  if (closed) log(`Sweep closed ${closed} duplicate tab(s).`);
+  return closed;
+}
+
 async function analyzeTabsForGrouping() {
+  if (!HAS_TAB_GROUPS) return [];
   const tabs = await browser.tabs.query({});
   const domainMap = new Map();
   
@@ -475,7 +604,7 @@ async function analyzeTabsForGrouping() {
   const suggestions = [];
   for (const [domain, domainTabs] of domainMap.entries()) {
     const ungroupedTabs = domainTabs.filter(
-      tab => tab.groupId === browser.tabGroups.TAB_GROUP_ID_NONE
+      tab => tab.groupId === TAB_GROUP_ID_NONE
     );
     
     if (ungroupedTabs.length >= 1) {
@@ -494,6 +623,7 @@ async function analyzeTabsForGrouping() {
 }
 
 async function findMatchingGroup(domain) {
+  if (!HAS_TAB_GROUPS) return null;
   const allGroups = await browser.tabGroups.query({});
   const domainLower = domain.toLowerCase();
   const domainBase = domainLower.replace(/\.com$|\.org$|\.net$|\.io$|\.co$/, '');
@@ -515,6 +645,7 @@ async function findMatchingGroup(domain) {
 }
 
 async function groupTabsByDomain(domain, tabIds, customTitle) {
+  if (!HAS_TAB_GROUPS) return null;
   const existingGroup = await findMatchingGroup(customTitle || domain);
   
   if (existingGroup) {
@@ -569,6 +700,10 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     return true;
   } else if (message.type === 'getGroups') {
+    if (!HAS_TAB_GROUPS) {
+      sendResponse({ success: true, groups: [] });
+      return false;
+    }
     browser.tabGroups.query({})
       .then(groups => sendResponse({ success: true, groups: groups.map(g => g.title).filter(Boolean) }))
       .catch(error => sendResponse({ success: false, error: error.message }));
@@ -610,6 +745,11 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
       })
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
+  } else if (message.type === 'sweepDuplicates') {
+    sweepDuplicates()
+      .then(closed => sendResponse({ success: true, closed }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
   }
 });
 
@@ -629,6 +769,22 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   }
 });
 
+// On Android an unloaded ("zombie") tab regains its URL when reopened. That's
+// our chance to reconcile a stale duplicate that was invisible while unloaded,
+// without the user having to manually reload it.
+browser.tabs.onActivated.addListener(async ({ tabId }) => {
+  try {
+    const tab = await browser.tabs.get(tabId);
+    rememberTabUrl(tab);
+    if (isRealUrl(tab.url)) checkForDuplicateTab(tab);
+  } catch (_) {}
+});
+
+// Keep the URL cache from growing unbounded.
+browser.tabs.onRemoved.addListener((tabId) => {
+  forgetTab(tabId);
+});
+
 browser.storage.onChanged.addListener((changes, areaName) => {
   if (areaName === 'sync') {
     loadSettings();
@@ -637,9 +793,64 @@ browser.storage.onChanged.addListener((changes, areaName) => {
 
 browser.runtime.onInstalled.addListener(() => {
   loadSettings().then(() => {
-    log("Extension installed and listening for duplicate tab groups.");
+    log("Extension installed.");
+    initBrowserAction();
   });
 });
 
-// Load settings on startup
-loadSettings();
+async function initBrowserAction() {
+  try {
+    const platform = await browser.runtime.getPlatformInfo();
+    isAndroid = platform.os === 'android';
+    if (isAndroid) {
+      if (browser.browserAction && typeof browser.browserAction.setPopup === 'function') {
+        await browser.browserAction.setPopup({ popup: "" });
+      }
+    }
+  } catch (err) {
+    log("Failed to initialize browser action:", err);
+  }
+  return isAndroid;
+}
+
+async function openSettings() {
+  const optionsUrl = browser.runtime.getURL("popup.html");
+  const tabs = await browser.tabs.query({});
+  for (const tab of tabs) {
+    if (tab.url && tab.url.startsWith(optionsUrl)) {
+      await browser.tabs.update(tab.id, { active: true });
+      return;
+    }
+  }
+  await browser.tabs.create({ url: optionsUrl });
+}
+
+if (browser.browserAction && browser.browserAction.onClicked) {
+  browser.browserAction.onClicked.addListener(() => {
+    openSettings().catch((err) => {
+      log("Failed to open settings tab:", err);
+      try {
+        browser.runtime.openOptionsPage();
+      } catch (_) {}
+    });
+  });
+}
+
+// Periodic auto-sweep (Android only, and only when the user opted into intervals).
+if (browser.alarms) {
+  browser.alarms.create('sweepDuplicates', { periodInMinutes: 5 });
+  browser.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === 'sweepDuplicates' && isAndroid &&
+        settings.enabled && settings.autoCloseDuplicates && settings.autoCloseDuplicatesInterval) {
+      sweepDuplicates();
+    }
+  });
+}
+
+// Load settings + detect platform + seed the URL cache on startup, then run the
+// startup sweep on Android if enabled.
+Promise.all([loadSettings(), initBrowserAction()])
+  .then(() => seedUrlCache())
+  .then(() => {
+    if (isAndroid && settings.enabled && settings.autoCloseDuplicates) sweepDuplicates();
+  });

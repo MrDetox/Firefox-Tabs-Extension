@@ -1,12 +1,13 @@
 {
   "manifest_version": 2,
   "name": "Better Tab Groups",
-  "version": "3.5.0",
+  "version": "3.7.0",
   "description": "Enhances Firefox tab groups with automatic merging, smart grouping suggestions, and rule-based tab organization.",
   "permissions": [
     "tabs",
     "tabGroups",
-    "storage"
+    "storage",
+    "alarms"
   ],
   "background": {
     "scripts": [
@@ -33,7 +34,7 @@
   "browser_specific_settings": {
     "gecko": {
       "id": "denis.duchev@gmail.com",
-      "strict_min_version": "139.0",
+      "strict_min_version": "140.0",
       "data_collection_permissions": {
         "required": [
           "none"
@@ -41,7 +42,7 @@
       }
     },
     "gecko_android": {
-      "strict_min_version": "139.0"
+      "strict_min_version": "142.0"
     }
   }
 }

@@ -4,7 +4,9 @@ const DEFAULT_SETTINGS = {
   preventDuplicateTabs: false,
   closeOldTab: false,
   preferGroupedTabWhenDuplicate: false,
-  skipDedupeWhenUserDuplicatedTab: true
+  skipDedupeWhenUserDuplicatedTab: true,
+  autoCloseDuplicates: true,
+  autoCloseDuplicatesInterval: false
 };
 
 const FEEDBACK_EMAIL = 'denis.duchev@gmail.com';
@@ -15,6 +17,7 @@ const DONATE_URL = 'https://buymeacoffee.com/denisd';
 let domainSuggestions = [];
 let groupSuggestions = [];
 let urlSuggestions = [];
+let isAndroidDevice = false;
 
 // Collapsible sections
 document.querySelectorAll('.section-header').forEach(header => {
@@ -163,8 +166,12 @@ async function loadSettings() {
     document.getElementById('closeOldTab').checked = result.closeOldTab === true;
     document.getElementById('preferGroupedTabWhenDuplicate').checked = result.preferGroupedTabWhenDuplicate === true;
     document.getElementById('skipDedupeWhenUserDuplicatedTab').checked = result.skipDedupeWhenUserDuplicatedTab !== false;
+    document.getElementById('autoCloseDuplicates').checked = result.autoCloseDuplicates !== false;
+    document.getElementById('autoCloseDuplicatesInterval').checked = result.autoCloseDuplicatesInterval === true;
     updateCloseOldTabSuboptionVisibility();
+    updateAutoCloseSuboptionVisibility();
     updateSkipDedupeWhenUserDuplicatedTabVisibility();
+    updatePathRulesSectionState();
   } catch (error) {
     console.error('Failed to load settings:', error);
     showStatus('Failed to load settings', 'error');
@@ -179,13 +186,15 @@ async function saveSettings() {
     const closeOldTab = document.getElementById('closeOldTab').checked;
     const preferGroupedTabWhenDuplicate = document.getElementById('preferGroupedTabWhenDuplicate').checked;
     const skipDedupeWhenUserDuplicatedTab = document.getElementById('skipDedupeWhenUserDuplicatedTab').checked;
+    const autoCloseDuplicates = document.getElementById('autoCloseDuplicates').checked;
+    const autoCloseDuplicatesInterval = document.getElementById('autoCloseDuplicatesInterval').checked;
 
     if (isNaN(debounceTime) || debounceTime < 0 || debounceTime > 10000) {
       showStatus('Debounce time must be between 0 and 10000 ms', 'error');
       return;
     }
 
-    await browser.storage.sync.set({ enabled, debounceTime, preventDuplicateTabs, closeOldTab, preferGroupedTabWhenDuplicate, skipDedupeWhenUserDuplicatedTab });
+    await browser.storage.sync.set({ enabled, debounceTime, preventDuplicateTabs, closeOldTab, preferGroupedTabWhenDuplicate, skipDedupeWhenUserDuplicatedTab, autoCloseDuplicates, autoCloseDuplicatesInterval });
     showStatus('Settings saved!', 'success');
     browser.runtime.sendMessage({ type: 'settingsChanged' }).catch(() => { });
   } catch (error) {
@@ -204,6 +213,12 @@ function updateSkipDedupeWhenUserDuplicatedTabVisibility() {
   const row = document.getElementById('skipDedupeWhenUserDuplicatedTabRow');
   const preventDuplicateTabs = document.getElementById('preventDuplicateTabs');
   row.style.display = preventDuplicateTabs && preventDuplicateTabs.checked ? '' : 'none';
+}
+
+function updateAutoCloseSuboptionVisibility() {
+  const row = document.getElementById('autoCloseIntervalRow');
+  const autoClose = document.getElementById('autoCloseDuplicates');
+  row.style.display = autoClose && autoClose.checked ? '' : 'none';
 }
 
 function showStatus(message, type) {
@@ -507,14 +522,18 @@ async function loadQuickGroupSuggestions() {
 
 // ============ Deduplication Rules ============
 async function loadDeduplicationRules() {
-  const container = document.getElementById('deduplicationRules');
+  const listDomain = document.getElementById('domainDedupeRulesList');
+  const listExact = document.getElementById('exactDedupeRulesList');
+  const listPath = document.getElementById('pathDedupeRulesList');
   const badge = document.getElementById('deduplicationCount');
 
   try {
     const response = await browser.runtime.sendMessage({ type: 'getDeduplicationRules' });
 
     if (!response.success) {
-      container.innerHTML = '<div class="empty-state">Failed to load rules</div>';
+      listDomain.innerHTML = '<div class="empty-state">Failed to load rules</div>';
+      listExact.innerHTML = '<div class="empty-state">Failed to load rules</div>';
+      listPath.innerHTML = '<div class="empty-state">Failed to load rules</div>';
       badge.textContent = '0';
       return;
     }
@@ -522,13 +541,16 @@ async function loadDeduplicationRules() {
     const rules = response.rules || [];
     badge.textContent = rules.length;
 
-    if (rules.length === 0) {
-      container.innerHTML = '<div class="empty-state">No deduplication rules yet. Add one above!</div>';
-      return;
-    }
+    // Clear lists
+    listDomain.innerHTML = '';
+    listExact.innerHTML = '';
+    listPath.innerHTML = '';
 
-    container.innerHTML = '';
     const template = document.getElementById('dedupeRuleTemplate');
+
+    let countDomain = 0;
+    let countExact = 0;
+    let countPath = 0;
 
     for (const rule of rules) {
       const clone = template.content.cloneNode(true);
@@ -538,15 +560,13 @@ async function loadDeduplicationRules() {
 
       const urlSpan = clone.querySelector('.rule-pattern');
       urlSpan.textContent = rule.url;
-      urlSpan.title = rule.url; // Tooltip
+      urlSpan.title = rule.url;
 
-      const matchTypeLabels = {
-        exact: 'Exact',
-        domain: 'Domain',
-        path: 'Path'
-      };
+      // Hide the redundant match type span since we display rules in separate sections
       const matchTypeSpan = clone.querySelector('.rule-match-type');
-      matchTypeSpan.textContent = `(${matchTypeLabels[rule.matchType] || rule.matchType})`;
+      if (matchTypeSpan) {
+        matchTypeSpan.style.display = 'none';
+      }
 
       const toggleBtn = clone.querySelector('.toggle-btn');
       toggleBtn.textContent = rule.enabled ? 'On' : 'Off';
@@ -561,22 +581,101 @@ async function loadDeduplicationRules() {
         if (res.success) {
           showStatus('Rule deleted', 'success');
           loadDeduplicationRules();
+          loadSuggestionsData();
         }
       });
 
-      container.appendChild(clone);
+      if (rule.matchType === 'domain') {
+        listDomain.appendChild(clone);
+        countDomain++;
+      } else if (rule.matchType === 'exact') {
+        listExact.appendChild(clone);
+        countExact++;
+      } else if (rule.matchType === 'path') {
+        listPath.appendChild(clone);
+        countPath++;
+      }
+    }
+
+    if (countDomain === 0) {
+      const emptyDiv = document.createElement('div');
+      emptyDiv.className = 'empty-state';
+      emptyDiv.textContent = 'No domain limits set.';
+      listDomain.appendChild(emptyDiv);
+    }
+    if (countExact === 0) {
+      const emptyDiv = document.createElement('div');
+      emptyDiv.className = 'empty-state';
+      emptyDiv.textContent = 'No specific page rules set.';
+      listExact.appendChild(emptyDiv);
+    }
+    if (countPath === 0) {
+      const emptyDiv = document.createElement('div');
+      emptyDiv.className = 'empty-state';
+      emptyDiv.textContent = 'No site-specific path rules set.';
+      listPath.appendChild(emptyDiv);
     }
   } catch (e) {
-    container.innerHTML = '<div class="empty-state">Error loading rules</div>';
+    listDomain.textContent = '';
+    listExact.textContent = '';
+    listPath.textContent = '';
+    
+    const errDiv1 = document.createElement('div');
+    errDiv1.className = 'empty-state';
+    errDiv1.textContent = 'Error loading rules';
+    listDomain.appendChild(errDiv1);
+
+    const errDiv2 = document.createElement('div');
+    errDiv2.className = 'empty-state';
+    errDiv2.textContent = 'Error loading rules';
+    listExact.appendChild(errDiv2);
+
+    const errDiv3 = document.createElement('div');
+    errDiv3.className = 'empty-state';
+    errDiv3.textContent = 'Error loading rules';
+    listPath.appendChild(errDiv3);
+
     badge.textContent = '0';
   }
 }
 
-async function useCurrentTabForDeduplication() {
+function extractDomain(url) {
+  try {
+    let cleanUrl = url;
+    if (url && !url.includes('://')) {
+      cleanUrl = 'http://' + url;
+    }
+    const urlObj = new URL(cleanUrl);
+    return urlObj.hostname.replace(/^www\./, '');
+  } catch (e) {
+    return null;
+  }
+}
+
+async function useCurrentTabDomainForInput(inputId) {
   try {
     const response = await browser.runtime.sendMessage({ type: 'getCurrentTab' });
     if (response.success && response.tab && response.tab.url) {
-      const urlInput = document.getElementById('deduplicationUrl');
+      const domain = extractDomain(response.tab.url);
+      if (domain) {
+        document.getElementById(inputId).value = domain;
+        showStatus('Current tab domain loaded', 'success');
+      } else {
+        showStatus('Could not extract domain', 'error');
+      }
+    } else {
+      showStatus('Could not get current tab', 'error');
+    }
+  } catch (e) {
+    showStatus('Failed to get current tab', 'error');
+  }
+}
+
+async function useCurrentTabForExactDeduplication() {
+  try {
+    const response = await browser.runtime.sendMessage({ type: 'getCurrentTab' });
+    if (response.success && response.tab && response.tab.url) {
+      const urlInput = document.getElementById('exactDedupeUrl');
       urlInput.value = response.tab.url;
       showStatus('Current tab URL loaded', 'success');
     } else {
@@ -612,23 +711,20 @@ async function useCurrentTabForGrouping() {
   }
 }
 
-async function addDeduplicationRule() {
-  const urlInput = document.getElementById('deduplicationUrl');
-  const matchTypeSelect = document.getElementById('deduplicationMatchType');
-  const url = urlInput.value.trim();
-  const matchType = matchTypeSelect.value;
-
+async function addDeduplicationRuleWithType(url, matchType, inputEl) {
   if (!url) {
-    showStatus('Enter a URL', 'error');
+    showStatus('Enter a URL or domain', 'error');
     return;
   }
 
-  // Validate URL
-  try {
-    new URL(url);
-  } catch (e) {
-    showStatus('Invalid URL format', 'error');
-    return;
+  // Basic validation - check URL format for 'exact' rule type
+  if (matchType === 'exact') {
+    try {
+      new URL(url);
+    } catch (e) {
+      showStatus('Invalid URL format (must start with http:// or https://)', 'error');
+      return;
+    }
   }
 
   // Close any open dropdowns
@@ -642,7 +738,7 @@ async function addDeduplicationRule() {
     });
 
     if (res.success) {
-      urlInput.value = '';
+      if (inputEl) inputEl.value = '';
       showStatus('Deduplication rule added!', 'success');
       loadDeduplicationRules();
       loadSuggestionsData();
@@ -651,6 +747,28 @@ async function addDeduplicationRule() {
     }
   } catch (e) {
     showStatus('Failed to add rule', 'error');
+  }
+}
+
+function updatePathRulesSectionState() {
+  const globalCheck = document.getElementById('preventDuplicateTabs');
+  const section = document.getElementById('pathRulesSection');
+  const statusEl = document.getElementById('pathDedupeStatus');
+  const inputEl = document.getElementById('pathDedupeUrl');
+  const buttonEl = document.getElementById('addPathDedupeBtn');
+
+  if (globalCheck && section && statusEl && inputEl && buttonEl) {
+    if (globalCheck.checked) {
+      section.classList.add('disabled-section');
+      statusEl.style.display = 'block';
+      inputEl.disabled = true;
+      buttonEl.disabled = true;
+    } else {
+      section.classList.remove('disabled-section');
+      statusEl.style.display = 'none';
+      inputEl.disabled = false;
+      buttonEl.disabled = false;
+    }
   }
 }
 
@@ -675,54 +793,153 @@ function setupDonateLink() {
   }
 }
 
+async function setupDeviceLayout() {
+  try {
+    const platform = await browser.runtime.getPlatformInfo();
+    isAndroidDevice = platform.os === 'android';
+    
+    let isPopup = true;
+    if (browser.extension && typeof browser.extension.getViews === 'function') {
+      const popupViews = browser.extension.getViews({ type: 'popup' });
+      isPopup = popupViews.includes(window);
+    }
+    
+    if (isAndroidDevice) {
+      document.body.classList.add('mobile-mode');
+      document.body.classList.add('options-mode');
+      const dedupeSection = document.getElementById('deduplicationSection');
+      if (dedupeSection) {
+        dedupeSection.classList.add('open');
+      }
+    } else if (!isPopup) {
+      document.body.classList.add('options-mode');
+    }
+  } catch (err) {
+    console.error('Failed to setup device layout:', err);
+  }
+}
+
 // ============ Initialize ============
 async function init() {
+  await setupDeviceLayout();
   loadSettings();
   await loadSuggestionsData();
 
   // Setup comboboxes with the loaded data
-  setupCombobox('domainCombobox', 'rulePattern', 'domainDropdown', () => domainSuggestions);
-  setupCombobox('groupCombobox', 'ruleGroup', 'groupDropdown', () => groupSuggestions);
-  setupCombobox('urlCombobox', 'deduplicationUrl', 'urlDropdown', () => urlSuggestions);
+  if (!isAndroidDevice) {
+    setupCombobox('domainCombobox', 'rulePattern', 'domainDropdown', () => domainSuggestions);
+    setupCombobox('groupCombobox', 'ruleGroup', 'groupDropdown', () => groupSuggestions);
+  }
+  setupCombobox('domainDedupeCombobox', 'domainDedupeUrl', 'domainDedupeDropdown', () => domainSuggestions);
+  setupCombobox('exactDedupeCombobox', 'exactDedupeUrl', 'exactDedupeDropdown', () => urlSuggestions);
+  setupCombobox('pathDedupeCombobox', 'pathDedupeUrl', 'pathDedupeDropdown', () => domainSuggestions);
 
-  loadRules();
-  loadQuickGroupSuggestions();
+  if (!isAndroidDevice) {
+    loadRules();
+    loadQuickGroupSuggestions();
+  }
   loadDeduplicationRules();
 
   setupFeedbackLink();
   setupDonateLink();
 
   // Setup deduplication rule handlers
-  document.getElementById('useCurrentTabBtn').addEventListener('click', useCurrentTabForDeduplication);
-  document.getElementById('addDeduplicationBtn').addEventListener('click', addDeduplicationRule);
+  document.getElementById('useCurrentTabDomainBtn').addEventListener('click', () => {
+    useCurrentTabDomainForInput('domainDedupeUrl');
+  });
+  document.getElementById('addDomainDedupeBtn').addEventListener('click', () => {
+    const urlInput = document.getElementById('domainDedupeUrl');
+    addDeduplicationRuleWithType(urlInput.value.trim(), 'domain', urlInput);
+  });
+  document.getElementById('useCurrentTabExactBtn').addEventListener('click', useCurrentTabForExactDeduplication);
+  document.getElementById('addExactDedupeBtn').addEventListener('click', () => {
+    const urlInput = document.getElementById('exactDedupeUrl');
+    addDeduplicationRuleWithType(urlInput.value.trim(), 'exact', urlInput);
+  });
+  document.getElementById('useCurrentTabPathBtn').addEventListener('click', () => {
+    useCurrentTabDomainForInput('pathDedupeUrl');
+  });
+  document.getElementById('addPathDedupeBtn').addEventListener('click', () => {
+    const urlInput = document.getElementById('pathDedupeUrl');
+    addDeduplicationRuleWithType(urlInput.value.trim(), 'path', urlInput);
+  });
 
   // Setup grouping rule handlers
-  document.getElementById('useCurrentTabForGroupingBtn').addEventListener('click', useCurrentTabForGrouping);
+  if (!isAndroidDevice) {
+    document.getElementById('useCurrentTabForGroupingBtn').addEventListener('click', useCurrentTabForGrouping);
+  }
+
+  // Keypress event handlers for adding rules via Enter key
+  document.getElementById('domainDedupeUrl').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter' && !document.getElementById('domainDedupeCombobox').classList.contains('open')) {
+      const urlInput = document.getElementById('domainDedupeUrl');
+      addDeduplicationRuleWithType(urlInput.value.trim(), 'domain', urlInput);
+    }
+  });
+  document.getElementById('exactDedupeUrl').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter' && !document.getElementById('exactDedupeCombobox').classList.contains('open')) {
+      const urlInput = document.getElementById('exactDedupeUrl');
+      addDeduplicationRuleWithType(urlInput.value.trim(), 'exact', urlInput);
+    }
+  });
+  document.getElementById('pathDedupeUrl').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter' && !document.getElementById('pathDedupeCombobox').classList.contains('open')) {
+      const urlInput = document.getElementById('pathDedupeUrl');
+      addDeduplicationRuleWithType(urlInput.value.trim(), 'path', urlInput);
+    }
+  });
 }
 
 init();
 
 // Event listeners
-document.getElementById('addRuleBtn').addEventListener('click', addRule);
-document.getElementById('rulePattern').addEventListener('keypress', (e) => {
-  if (e.key === 'Enter' && !document.getElementById('domainCombobox').classList.contains('open')) {
-    addRule();
-  }
-});
-document.getElementById('ruleGroup').addEventListener('keypress', (e) => {
-  if (e.key === 'Enter' && !document.getElementById('groupCombobox').classList.contains('open')) {
-    addRule();
-  }
-});
-document.getElementById('enabled').addEventListener('change', saveSettings);
-document.getElementById('debounceTime').addEventListener('change', saveSettings);
+if (!isAndroidDevice) {
+  document.getElementById('addRuleBtn').addEventListener('click', addRule);
+  document.getElementById('rulePattern').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter' && !document.getElementById('domainCombobox').classList.contains('open')) {
+      addRule();
+    }
+  });
+  document.getElementById('ruleGroup').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter' && !document.getElementById('groupCombobox').classList.contains('open')) {
+      addRule();
+    }
+  });
+  document.getElementById('enabled').addEventListener('change', saveSettings);
+  document.getElementById('debounceTime').addEventListener('change', saveSettings);
+}
+
 document.getElementById('preventDuplicateTabs').addEventListener('change', () => {
   updateSkipDedupeWhenUserDuplicatedTabVisibility();
+  updatePathRulesSectionState();
   saveSettings();
 });
 document.getElementById('closeOldTab').addEventListener('change', () => {
   updateCloseOldTabSuboptionVisibility();
   saveSettings();
 });
-document.getElementById('preferGroupedTabWhenDuplicate').addEventListener('change', saveSettings);
+if (!isAndroidDevice) {
+  document.getElementById('preferGroupedTabWhenDuplicate').addEventListener('change', saveSettings);
+}
 document.getElementById('skipDedupeWhenUserDuplicatedTab').addEventListener('change', saveSettings);
+document.getElementById('autoCloseDuplicates').addEventListener('change', () => {
+  updateAutoCloseSuboptionVisibility();
+  saveSettings();
+});
+document.getElementById('autoCloseDuplicatesInterval').addEventListener('change', saveSettings);
+document.getElementById('sweepDuplicatesBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('sweepDuplicatesBtn');
+  btn.disabled = true;
+  try {
+    const res = await browser.runtime.sendMessage({ type: 'sweepDuplicates' });
+    if (res && res.success) {
+      showStatus(res.closed ? `Closed ${res.closed} duplicate tab${res.closed > 1 ? 's' : ''}` : 'No duplicates found', 'success');
+    } else {
+      showStatus('Failed to clean up', 'error');
+    }
+  } catch (e) {
+    showStatus('Failed to clean up', 'error');
+  } finally {
+    btn.disabled = false;
+  }
+});
