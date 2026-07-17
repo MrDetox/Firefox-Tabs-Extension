@@ -1,5 +1,10 @@
 # Changelog - Better Tab Groups
 
+## [3.7.1] - 2026-07-17
+
+### Fixed
+- **Cleanup sweep now honors "Single Tab Limit" domain rules:** The auto-close sweep and the "Clean up duplicates now" button previously only closed tabs with the exact same URL, so a domain limited to a single tab (e.g. facebook.com) could still have several tabs open on different pages and the sweep reported "No duplicates found". The sweep now also collapses all tabs on a limited domain down to one, keeping the most recently used loaded tab.
+
 ## [3.7.0] - 2026-07-17
 
 ### Added

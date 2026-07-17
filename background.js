@@ -543,41 +543,74 @@ function pickKeeper(tabs) {
   }, null);
 }
 
-async function stillHasUrl(id, expectedNorm) {
+async function stillMatches(id, matchFn) {
   try {
     const t = await browser.tabs.get(id);
-    if (isRealUrl(t.url)) { rememberTabUrl(t); return normalizeUrl(t.url) === expectedNorm; }
+    if (isRealUrl(t.url)) { rememberTabUrl(t); return matchFn(t.url); }
   } catch (_) {
     forgetTab(id);
     return false;
   }
   // Unloaded: trust the cached URL (don't wake it just to verify).
-  return isRealUrl(urlCache[id]) && normalizeUrl(urlCache[id]) === expectedNorm;
+  return isRealUrl(urlCache[id]) && matchFn(urlCache[id]);
+}
+
+async function sweepGroups(groups, matchFnFor, alreadyClosed) {
+  let closed = 0;
+  for (const [key, tabs] of groups) {
+    const remaining = tabs.filter((t) => !alreadyClosed.has(t.id));
+    if (remaining.length < 2) continue;
+    const keeper = pickKeeper(remaining);
+    for (const t of remaining) {
+      if (t.id === keeper.id) continue;
+      if (!(await stillMatches(t.id, matchFnFor(key)))) continue;
+      try { await browser.tabs.remove(t.id); alreadyClosed.add(t.id); closed++; }
+      catch (_) { forgetTab(t.id); }
+    }
+  }
+  return closed;
 }
 
 async function sweepDuplicates() {
   const myExtensionOrigin = browser.runtime.getURL('');
-  const candidates = await getCandidateTabs();
-
-  const groups = new Map();
-  for (const t of candidates) {
-    if (!isRealUrl(t.url) || t.url.startsWith(myExtensionOrigin)) continue;
-    const key = normalizeUrl(t.url);
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(t);
+  const candidates = [];
+  for (const t of await getCandidateTabs()) {
+    if (isRealUrl(t.url) && !t.url.startsWith(myExtensionOrigin)) candidates.push(t);
   }
+  const alreadyClosed = new Set();
 
-  let closed = 0;
-  for (const [key, tabs] of groups) {
-    if (tabs.length < 2) continue;
-    const keeper = pickKeeper(tabs);
-    for (const t of tabs) {
-      if (t.id === keeper.id) continue;
-      if (!(await stillHasUrl(t.id, key))) continue;
-      try { await browser.tabs.remove(t.id); closed++; }
-      catch (_) { forgetTab(t.id); }
+  // Pass 1: exact-URL duplicates.
+  const byUrl = new Map();
+  for (const t of candidates) {
+    const key = normalizeUrl(t.url);
+    if (!byUrl.has(key)) byUrl.set(key, []);
+    byUrl.get(key).push(t);
+  }
+  let closed = await sweepGroups(byUrl, (key) => (u) => normalizeUrl(u) === key, alreadyClosed);
+
+  // Pass 2: "Single Tab Limit" domain rules — one tab per limited domain.
+  const limitedDomains = new Set();
+  for (const rule of deduplicationRules) {
+    if (rule.enabled && rule.matchType === 'domain' && rule.url) {
+      const d = getDomain(rule.url);
+      if (d) limitedDomains.add(d.toLowerCase());
     }
   }
+  if (limitedDomains.size) {
+    const byDomain = new Map();
+    for (const t of candidates) {
+      const d = getDomain(t.url);
+      if (!d || !limitedDomains.has(d.toLowerCase())) continue;
+      if (!byDomain.has(d.toLowerCase())) byDomain.set(d.toLowerCase(), []);
+      byDomain.get(d.toLowerCase()).push(t);
+    }
+    closed += await sweepGroups(
+      byDomain,
+      (domain) => (u) => (getDomain(u) || '').toLowerCase() === domain,
+      alreadyClosed
+    );
+  }
+
   if (closed) log(`Sweep closed ${closed} duplicate tab(s).`);
   return closed;
 }
